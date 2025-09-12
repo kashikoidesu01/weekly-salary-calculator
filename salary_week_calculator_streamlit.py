@@ -3,8 +3,11 @@
 """
 Weekly Salary Calculator - Streamlit Web App
 - Base currency selector; Monthly amount resets to 0.00 when currency changes
-- Conversion to a target currency using exchangerate.host (direct base→target)
-- Shows FX last-updated timestamp
+- Robust conversion (base -> target) with multi-provider fallback:
+  1) open.er-api.com
+  2) exchangerate.host (/convert)
+  3) fawazahmed0/currency-api via jsDelivr
+- Shows provider and last-updated timestamp
 """
 import datetime as dt
 import requests
@@ -31,38 +34,56 @@ def money(x: float, symbol: str="$") -> str:
 @st.cache_data(ttl=60*30)
 def get_rate(base: str, target: str):
     """
-    Return (rate, fetched_at_utc_str) for base->target from exchangerate.host.
-    1) Try /latest?base=BASE&symbols=TARGET
-    2) Fallback to /convert?from=BASE&to=TARGET
+    Return (rate, provider, fetched_at_utc_str) for base->target.
+    Tries multiple providers for robustness.
     """
-    base = base.upper(); target = target.upper()
+    base = base.upper()
+    target = target.upper()
+    now_str = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     if base == target:
-        return 1.0, dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        return 1.0, "identity", now_str
 
-    # Try /latest
+    # 1) open.er-api.com
     try:
-        url = f"https://api.exchangerate.host/latest?base={base}&symbols={target}"
+        url = f"https://open.er-api.com/v6/latest/{base}"
         r = requests.get(url, timeout=15)
         r.raise_for_status()
         data = r.json()
-        rate = data.get("rates", {}).get(target)
-        if rate:
-            fetched_at = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-            return float(rate), fetched_at
+        if data.get("result") == "success":
+            rate = data.get("rates", {}).get(target)
+            if rate is not None:
+                ts = data.get("time_last_update_utc") or now_str
+                return float(rate), "open.er-api.com", ts
     except Exception:
         pass
 
-    # Fallback /convert
-    url = f"https://api.exchangerate.host/convert?from={base}&to={target}"
-    r = requests.get(url, timeout=15)
-    r.raise_for_status()
-    data = r.json()
-    rate = data.get("info", {}).get("rate") or data.get("result")
-    if rate:
-        fetched_at = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-        return float(rate), fetched_at
+    # 2) exchangerate.host (convert)
+    try:
+        url = f"https://api.exchangerate.host/convert?from={base}&to={target}"
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        rate = data.get("info", {}).get("rate") or data.get("result")
+        if rate:
+            ts = data.get("date") or now_str  # API gives date; we add time
+            return float(rate), "exchangerate.host", f"{ts} (approx)"
+    except Exception:
+        pass
 
-    raise RuntimeError(f"Rate for {base}->{target} not available.")
+    # 3) Fawaz Currency API via jsDelivr (daily JSON)
+    try:
+        url = f"https://cdn.jsdelivr.net/gh/fawazahmed0/currency-api@1/latest/currencies/{base.lower()}/{target.lower()}.json"
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        rate = data.get(target.lower())
+        if rate:
+            ts = data.get("date", "") or now_str
+            return float(rate), "fawazahmed0/currency-api", f"{ts} (daily)"
+    except Exception:
+        pass
+
+    raise RuntimeError(f"Rate for {base}->{target} not available from providers.")
 
 # Pretty formula
 st.markdown("### Formula")
@@ -137,7 +158,7 @@ if "results" in st.session_state:
 
     if convert_clicked:
         try:
-            rate, fetched_at = get_rate(res["base_code"], target_code)
+            rate, provider, fetched_at = get_rate(res["base_code"], target_code)
             daily_t  = res["daily"]  * rate
             weekly_t = res["weekly"] * rate
             total_t  = res["total"]  * rate
@@ -147,9 +168,10 @@ if "results" in st.session_state:
             st.metric("1-week pay",  f"{weekly_t:,.2f} {target_code}")
             if res["weeks"] != 1:
                 st.metric(f"Total for {res['weeks']} week(s)", f"{total_t:,.2f} {target_code}")
-            st.caption(f"Rates from exchangerate.host • updated: {fetched_at}")
+            st.caption(f"Rates from {provider} • updated: {fetched_at}")
         except Exception as e:
             st.error(f"Conversion error: {e}")
 
 st.markdown("---")
 st.caption("Note: Months are not always exactly 4 weeks. Using days-in-month keeps things fair for 30 vs 31-day months (and February).")
+
