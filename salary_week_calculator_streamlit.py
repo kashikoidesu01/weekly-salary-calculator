@@ -11,7 +11,7 @@ st.set_page_config(page_title="Weekly Salary Calculator", page_icon="🧮")
 st.title("🧮 Weekly Salary Calculator")
 
 # Fórmula en bonito (sin exponer nombres técnicos)
-st.markdown("### 🧮 Fórmula")
+st.markdown("### Fórmula")
 st.latex(r"(\text{Monto mensual} \div \text{Días del mes}) \times \text{Días de la semana} \times \text{Número de semanas}")
 
 with st.form("calc"):
