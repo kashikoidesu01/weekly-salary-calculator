@@ -113,12 +113,12 @@ base_symbol = CODE_TO_SYMBOL[base_code]
 col1, col2 = st.columns(2)
 with col1:
     monthly_amount = st.number_input(
-        f"Monthly amount ({base_code})",
-        min_value=0.0,
-        value=float(st.session_state.monthly_amount),
-        step=10.0, format="%.2f",
-        key="monthly_amount",
-    )
+    f"Monthly amount ({base_code})",
+    min_value=0.0,
+    step=10.0,
+    format="%.2f",
+    key="monthly_amount",
+)
     days_in_week = st.number_input("Days in week", min_value=1, max_value=7, value=7, step=1)
 with col2:
     days_in_month = st.number_input("Days in month", min_value=28, max_value=31, value=30, step=1)
