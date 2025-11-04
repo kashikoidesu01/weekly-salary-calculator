@@ -1,177 +1,197 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Weekly Salary Calculator - Streamlit Web App
-- Base currency selector; Monthly amount resets to 0.00 when currency changes
-- Robust conversion (base -> target) with multi-provider fallback:
-  1) open.er-api.com
-  2) exchangerate.host (/convert)
-  3) fawazahmed0/currency-api via jsDelivr
-- Shows provider and last-updated timestamp
-"""
-import datetime as dt
-import requests
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
+import pandas as pd
+from datetime import datetime, date
+from zoneinfo import ZoneInfo
+from io import BytesIO
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
-st.set_page_config(page_title="Weekly Salary Calculator", page_icon="🧮")
-st.title("🧮 Weekly Salary Calculator")
+# --- CONFIGURACIÓN INICIAL ---
+st.set_page_config(page_title="Registro de Tiempo de Empleados", page_icon="⏱️", layout="centered")
+st.title("⏱️ Registro de Tiempo de Empleados")
 
-# Currencies
-CURRENCIES = [
-    ("USD", "US Dollar", "$"), ("EUR", "Euro", "€"), ("GBP", "British Pound", "£"),
-    ("CAD", "Canadian Dollar", "$"), ("MXN", "Mexican Peso", "$"),
-    ("COP", "Colombian Peso", "$"), ("BRL", "Brazilian Real", "R$"),
-    ("CLP", "Chilean Peso", "$"), ("PEN", "Peruvian Sol", "S/"),
-    ("JPY", "Japanese Yen", "¥"), ("ARS", "Argentine Peso", "$"),
-]
-CODE_TO_NAME = {c: n for c, n, _ in CURRENCIES}
-CODE_TO_SYMBOL = {c: s for c, _, s in CURRENCIES}
-CODES = [c for c, _, _ in CURRENCIES]
+# --- ESTILOS ---
+st.markdown("""
+    <style>
+    .big-font { font-size:22px !important; font-weight:bold; }
+    .timer { font-size:28px !important; color:#00FFAA; }
+    </style>
+""", unsafe_allow_html=True)
 
-def money(x: float, symbol: str="$") -> str:
-    return f"{symbol}{x:,.2f}"
-
-@st.cache_data(ttl=60*30)
-def get_rate(base: str, target: str):
-    """
-    Return (rate, provider, fetched_at_utc_str) for base->target.
-    Tries multiple providers for robustness.
-    """
-    base = base.upper()
-    target = target.upper()
-    now_str = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    if base == target:
-        return 1.0, "identity", now_str
-
-    # 1) open.er-api.com
-    try:
-        url = f"https://open.er-api.com/v6/latest/{base}"
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("result") == "success":
-            rate = data.get("rates", {}).get(target)
-            if rate is not None:
-                ts = data.get("time_last_update_utc") or now_str
-                return float(rate), "open.er-api.com", ts
-    except Exception:
-        pass
-
-    # 2) exchangerate.host (convert)
-    try:
-        url = f"https://api.exchangerate.host/convert?from={base}&to={target}"
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        rate = data.get("info", {}).get("rate") or data.get("result")
-        if rate:
-            ts = data.get("date") or now_str  # API gives date; we add time
-            return float(rate), "exchangerate.host", f"{ts} (approx)"
-    except Exception:
-        pass
-
-    # 3) Fawaz Currency API via jsDelivr (daily JSON)
-    try:
-        url = f"https://cdn.jsdelivr.net/gh/fawazahmed0/currency-api@1/latest/currencies/{base.lower()}/{target.lower()}.json"
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        rate = data.get(target.lower())
-        if rate:
-            ts = data.get("date", "") or now_str
-            return float(rate), "fawazahmed0/currency-api", f"{ts} (daily)"
-    except Exception:
-        pass
-
-    raise RuntimeError(f"Rate for {base}->{target} not available from providers.")
-
-# Pretty formula
-st.markdown("### Formula")
-st.latex(r"(\text{Monthly amount} \div \text{Days in month}) \times \text{Days in week} \times \text{Number of weeks}")
-
-# Session defaults
-if "base_code" not in st.session_state:
-    st.session_state.base_code = "USD"
-if "monthly_amount" not in st.session_state:
-    st.session_state.monthly_amount = 650.00  # default for USD
-
-def on_currency_change():
-    st.session_state.monthly_amount = 0.00
-
-# Inputs
-st.markdown("#### Base currency")
-base_code = st.selectbox(
-    "Select your currency",
-    options=CODES,
-    index=CODES.index(st.session_state.base_code),
-    format_func=lambda c: f"{c} — {CODE_TO_NAME[c]}",
-    key="base_code",
-    on_change=on_currency_change,
-)
-base_symbol = CODE_TO_SYMBOL[base_code]
-
-col1, col2 = st.columns(2)
-with col1:
-    monthly_amount = st.number_input(
-    f"Monthly amount ({base_code})",
-    min_value=0.0,
-    step=10.0,
-    format="%.2f",
-    key="monthly_amount",
-)
-    days_in_week = st.number_input("Days in week", min_value=1, max_value=7, value=7, step=1)
-with col2:
-    days_in_month = st.number_input("Days in month", min_value=28, max_value=31, value=30, step=1)
-    weeks = st.number_input("Number of weeks", min_value=1, max_value=53, value=1, step=1)
-
-calc_clicked = st.button("Calculate")
-
-# Calculation
-if calc_clicked:
-    daily = (monthly_amount / days_in_month) if days_in_month else 0.0
-    weekly = daily * days_in_week
-    total = weekly * weeks
-    st.session_state.results = {
-        "base_code": base_code, "base_symbol": base_symbol,
-        "daily": daily, "weekly": weekly, "total": total, "weeks": int(weeks),
+# --- DATOS BASE ---
+if "grupos" not in st.session_state:
+    st.session_state.grupos = {
+        "Grupo Elizabeth": ["Elizabeth", "Cindy"],
+        "Grupo Cecilia": ["Cecilia", "Ofelia"],
+        "Grupo Shirley": ["Shirley", "Kelly"],
     }
 
-# Results
-if "results" in st.session_state:
-    res = st.session_state.results
-    st.subheader(f"Results in {res['base_code']}")
-    st.metric("Daily rate", money(res["daily"], res["base_symbol"]))
-    st.metric("1-week pay", money(res["weekly"], res["base_symbol"]))
-    if res["weeks"] != 1:
-        st.metric(f"Total for {res['weeks']} week(s)", money(res["total"], res["base_symbol"]))
+if "turnos" not in st.session_state:
+    st.session_state.turnos = {}
 
-    # Conversion
-    st.markdown("---")
-    st.markdown("#### Convert results to another currency")
-    target_code = st.selectbox(
-        "Target currency", options=CODES,
-        index=CODES.index("USD"),
-        format_func=lambda c: f"{c} — {CODE_TO_NAME[c]}",
-        key="target_code",
-    )
-    convert_clicked = st.button("Convert current results")
+if "turnos_completos" not in st.session_state:
+    st.session_state.turnos_completos = {}
 
-    if convert_clicked:
-        try:
-            rate, provider, fetched_at = get_rate(res["base_code"], target_code)
-            daily_t  = res["daily"]  * rate
-            weekly_t = res["weekly"] * rate
-            total_t  = res["total"]  * rate
+if "form_abierto" not in st.session_state:
+    st.session_state.form_abierto = None
 
-            st.subheader(f"Converted to {target_code}")
-            st.metric("Daily rate",  f"{daily_t:,.2f} {target_code}")
-            st.metric("1-week pay",  f"{weekly_t:,.2f} {target_code}")
-            if res["weeks"] != 1:
-                st.metric(f"Total for {res['weeks']} week(s)", f"{total_t:,.2f} {target_code}")
-            st.caption(f"Rates from {provider} • updated: {fetched_at}")
-        except Exception as e:
-            st.error(f"Conversion error: {e}")
+# --- VARIABLES ---
+usuario = st.radio("Selecciona tu tipo de usuario:", ["dispatcher", "boss"])
+grupo = st.selectbox("Selecciona grupo de trabajo:", list(st.session_state.grupos.keys()))
 
+# --- HORA ACTUAL ---
+def hora_actual():
+    return datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M:%S %p")
+
+# --- INICIAR / PAUSAR / DETENER ---
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    if st.button("▶️ Iniciar turno"):
+        st.session_state.turnos[grupo] = {
+            "inicio": datetime.now(ZoneInfo("America/New_York")),
+            "pausado": False,
+            "pausa_inicio": None,
+            "tiempo_total": 0,
+            "pausas": []
+        }
+        st.success(f"Turno iniciado para {grupo}")
+
+with col2:
+    if grupo in st.session_state.turnos and st.button("⏸️ Pausar / Reanudar"):
+        turno = st.session_state.turnos[grupo]
+        if not turno["pausado"]:
+            turno["pausado"] = True
+            turno["pausa_inicio"] = datetime.now(ZoneInfo("America/New_York"))
+            st.session_state.form_abierto = grupo
+        else:
+            pausa_duracion = (datetime.now(ZoneInfo("America/New_York")) - turno["pausa_inicio"]).total_seconds()
+            turno["tiempo_total"] += pausa_duracion
+            turno["pausado"] = False
+            st.info(f"{grupo} reanudó trabajo a las {hora_actual()}")
+
+with col3:
+    if grupo in st.session_state.turnos and st.button("⏹️ Terminar"):
+        turno = st.session_state.turnos.pop(grupo)
+        duracion = (datetime.now(ZoneInfo("America/New_York")) - turno["inicio"]).total_seconds() - turno["tiempo_total"]
+        turno["duracion"] = duracion
+        st.session_state.turnos_completos[grupo] = turno
+        st.success(f"✅ Turno finalizado para {grupo}")
+
+# --- FORMULARIO DE PAUSA ---
+if st.session_state.form_abierto:
+    g = st.session_state.form_abierto
+    st.markdown(f"### 📝 Registrar pausa para {g}")
+    with st.form(f"form_{g}"):
+        cliente = st.text_input("Cliente")
+        direccion = st.text_input("Dirección")
+        # 🔹 Campo manual (sin valor automático)
+        hora_inicio = st.text_input("Hora de inicio (ej. 08:00 AM)")
+        tiempo_estimado = st.text_input("Tiempo estimado (min)")
+        tiempo_viaje = st.text_input("Tiempo de viaje (min)")
+        guardar = st.form_submit_button("Guardar información de pausa")
+
+        if guardar:
+            pausa_data = {
+                "cliente": cliente,
+                "direccion": direccion,
+                "hora_inicio": hora_inicio,
+                "tiempo_estimado": tiempo_estimado,
+                "tiempo_viaje": tiempo_viaje
+            }
+            st.session_state.turnos[g]["pausas"].append(pausa_data)
+            st.session_state.form_abierto = None
+            st.success(f"Pausa registrada para {g}")
+
+# --- REFRESCO AUTOMÁTICO ---
+st_autorefresh(interval=1000, key="refresco_cronometro")
+
+# --- MOSTRAR GRUPOS ACTIVOS ---
 st.markdown("---")
-st.caption("Note: Months are not always exactly 4 weeks. Using days-in-month keeps things fair for 30 vs 31-day months (and February).")
+st.subheader("🟢 Grupos activos")
 
+for g, t in st.session_state.turnos.items():
+    estado = "Pausado" if t["pausado"] else "Trabajando"
+    tiempo_transcurrido = (
+        (datetime.now(ZoneInfo("America/New_York")) - t["inicio"]).total_seconds() - t["tiempo_total"]
+        if not t["pausado"]
+        else (t["pausa_inicio"] - t["inicio"]).total_seconds() - t["tiempo_total"]
+    )
+    horas, resto = divmod(max(0, tiempo_transcurrido), 3600)
+    minutos, segundos = divmod(resto, 60)
+    st.markdown(f"""
+    **{g}**  
+    - Estado: {estado}  
+    - Inicio: {t["inicio"].strftime("%I:%M:%S %p")}  
+    - Tiempo transcurrido: <span class='timer'>{int(horas):02}:{int(minutos):02}:{int(segundos):02}</span>
+    """, unsafe_allow_html=True)
+
+# --- BOTÓN FINAL PARA GENERAR REPORTES ---
+st.markdown("---")
+if st.button("📄 Terminar y generar reporte (CSV / PDF)"):
+    if st.session_state.turnos_completos:
+        datos = []
+        for g, t in st.session_state.turnos_completos.items():
+            for pausa in t.get("pausas", []):
+                duracion = str(pd.to_timedelta(t["duracion"], unit="s"))
+                datos.append({
+                    "grupo": g,
+                    "cliente": pausa.get("cliente", ""),
+                    "direccion": pausa.get("direccion", ""),
+                    "hora_inicio": pausa.get("hora_inicio", ""),
+                    "tiempo_estimado": pausa.get("tiempo_estimado", ""),
+                    "tiempo_viaje": pausa.get("tiempo_viaje", ""),
+                    "duracion": duracion
+                })
+
+        df = pd.DataFrame(datos)
+        csv_filename = f"reporte_{date.today().strftime('%Y-%m-%d')}.csv"
+        df.to_csv(csv_filename, index=False)
+
+        # --- GENERAR PDF ---
+        pdf_filename = f"reporte_{date.today().strftime('%Y-%m-%d')}.pdf"
+        doc = SimpleDocTemplate(
+            pdf_filename,
+            pagesize=letter,
+            rightMargin=30,
+            leftMargin=30,
+            topMargin=30,
+            bottomMargin=30
+        )
+        elements = []
+        styles = getSampleStyleSheet()
+        style_title = styles["Title"]
+
+        elements.append(Paragraph("Reporte Diario de Actividades", style_title))
+        elements.append(Spacer(1, 12))
+
+        data = [["Grupo", "Cliente", "Dirección", "Hora inicio", "Tiempo estimado", "Tiempo viaje", "Duración (HH:MM:SS)"]]
+        for _, row in df.iterrows():
+            data.append(list(row.values))
+
+        col_widths = [1.1*inch, 1.3*inch, 1.5*inch, 1*inch, 1.1*inch, 1.1*inch, 1.1*inch]
+        table = Table(data, colWidths=col_widths, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.2, 0.4, 0.6)),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("WORDWRAP", (0, 0), (-1, -1), None)
+        ]))
+
+        elements.append(table)
+        doc.build(elements)
+
+        st.download_button("⬇️ Descargar CSV", open(csv_filename, "rb"), file_name=csv_filename)
+        st.download_button("⬇️ Descargar PDF", open(pdf_filename, "rb"), file_name=pdf_filename)
+        st.success("✅ Reporte generado correctamente.")
+    else:
+        st.info("No hay datos para generar el reporte.")
